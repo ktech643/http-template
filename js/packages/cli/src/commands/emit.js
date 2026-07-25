@@ -89,8 +89,35 @@ function dispatchCurl(ir, scheme, bodyStream = null) {
   });
 }
 
-function emitCommand(file, flags) {
-  // TODO: Read parsed IR, handle the --target <curl|fetch> flag, and call the respective executor.
-  console.log(`[emit] Executing on file: ${file} with flags: ${JSON.stringify(flags)}`);
+const { build } = require('@httpt/core');
+const { loadTemplate, loadData } = require('../io');
+
+/**
+ * `httpt emit <file> --target <curl|fetch>` — build the IR and dispatch it via
+ * the chosen executor. Defaults to the fetch executor.
+ * @param {string} file
+ * @param {Record<string, string | boolean>} flags
+ */
+async function emitCommand(file, flags) {
+  const template = loadTemplate(file);
+  const data = loadData(file, flags);
+  const target = typeof flags.target === 'string' ? flags.target : 'fetch';
+  const scheme = typeof flags.scheme === 'string' ? flags.scheme : 'https';
+
+  const { ir, bodyStream } = await build(template, data);
+
+  if (target === 'curl') {
+    await dispatchCurl(ir, scheme, bodyStream);
+    return;
+  }
+  if (target === 'fetch') {
+    const res = await dispatchFetch(ir, scheme, bodyStream);
+    const text = await res.text();
+    console.log(`HTTP ${res.status} ${res.statusText}`);
+    console.log(text);
+    return;
+  }
+  throw new Error(`Unknown --target '${target}' (expected 'curl' or 'fetch')`);
 }
+
 module.exports = { emitCommand, dispatchCurl };

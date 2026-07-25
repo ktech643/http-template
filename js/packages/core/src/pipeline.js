@@ -1,9 +1,6 @@
-async function hydrate(template, data, streams = []) {
-  return { resolved: '', map: [], bodyStream: null };
-}
+'use strict';
 
-function parse(resolved, optionalBodyStream = null) {
-  return { ir: {}, bodyStream: null };
-}
+const { hydrate } = require('./hydrate');
+const { parse } = require('./parse');
 
 module.exports = { hydrate, parse };
