@@ -177,6 +177,13 @@ function normalizeForEchoServer(expectedIR, serverIR, adapterName) {
       }
     }
     expectedIR.headers = Object.keys(mergedHeaders).map(name => ({ name, value: mergedHeaders[name] }));
+
+    // fetch (undici) sorts header field-names before sending, so wire order is
+    // not preserved. Distinct field-name order is not semantically significant,
+    // so compare order-independently by sorting both sides by name.
+    const byName = (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    expectedIR.headers.sort(byName);
+    serverIR.headers.sort(byName);
   }
 
   if (adapterName === 'fetch' && ['GET', 'HEAD'].includes(expectedIR.method)) {
