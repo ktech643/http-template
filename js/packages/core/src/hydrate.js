@@ -2,6 +2,13 @@
 
 const { createChannel, toTextChunks, toByteChunks } = require('./streams');
 const { applyFilter, FILTERS } = require('./filters');
+const {
+  STREAM_FILTERS,
+  collectStreamReferences,
+  validateStreamReferences,
+  materializeStream,
+  resolveRef,
+} = require('./stream-refs');
 
 /**
  * @typedef {import('./types').HttptIR} HttptIR
@@ -23,11 +30,28 @@ function lookup(data, name) {
  * braces) to its substituted string value.
  * @param {string} inner
  * @param {object} data
+ * @param {Map<number, Uint8Array>} materialized - buffered streams by index, for stream-as-* filters
  * @returns {string}
  */
-function renderTag(inner, data) {
+function renderTag(inner, data, materialized) {
   const parts = inner.split('|').map((s) => s.trim());
   const name = parts[0];
+
+  // Streaming transformations (§1.3.2.3) resolve a materialized stream, not the
+  // data value directly.
+  if (parts.length === 2 && STREAM_FILTERS.has(parts[1])) {
+    const { index } = resolveRef(lookup(data, name));
+    const bytes = materialized.get(index) || new Uint8Array(0);
+    switch (parts[1]) {
+      case 'stream-as-base64':
+        return Buffer.from(bytes).toString('base64');
+      case 'stream-as-utf8':
+        return new TextDecoder('utf-8').decode(bytes);
+      case 'stream-as-is':
+        return Buffer.from(bytes).toString('latin1');
+    }
+  }
+
   let value = lookup(data, name);
   if (parts.length === 1) {
     return FILTERS.raw(value);
@@ -107,6 +131,7 @@ function hydrate(template, data = {}, streams = []) {
   });
 
   const encoder = new TextEncoder();
+  const materialized = new Map(); // stream index -> buffered bytes, for stream-as-* filters
   const dynamicHeaders = Array.isArray(data && data.headers) ? data.headers : [];
   const dynamicBody = data && typeof data.body === 'object' && data.body !== null ? data.body : undefined;
 
@@ -221,7 +246,7 @@ function hydrate(template, data = {}, streams = []) {
         }
         const inner = buf.slice(2, close);
         const tagLen = close + 2;
-        recordTag(sourceIndex, tagLen, renderTag(inner, data));
+        recordTag(sourceIndex, tagLen, renderTag(inner, data, materialized));
         sourceIndex += tagLen;
         buf = buf.slice(tagLen);
       } else {
@@ -320,7 +345,7 @@ function hydrate(template, data = {}, streams = []) {
       }
       const inner = buf.slice(2, close);
       const tagLen = close + 2;
-      recordTag(sourceIndex, tagLen, renderTag(inner, data));
+      recordTag(sourceIndex, tagLen, renderTag(inner, data, materialized));
       sourceIndex += tagLen;
       buf = buf.slice(tagLen);
     }
@@ -332,6 +357,17 @@ function hydrate(template, data = {}, streams = []) {
   }
 
   async function processTemplate() {
+    // Validate stream references (§1.4.4) and materialize any streams used inline
+    // by stream-as-* filters (§1.4.5) before the state machine runs, so renderTag
+    // can resolve them synchronously.
+    const refs = collectStreamReferences(template, data);
+    validateStreamReferences(refs);
+    for (const ref of refs) {
+      if (ref.where.startsWith('filter:') && !materialized.has(ref.index)) {
+        materialized.set(ref.index, await materializeStream(streams ? streams[ref.index] : undefined));
+      }
+    }
+
     for await (const chunk of toTextChunks(template)) {
       buf += chunk;
       step(false);
